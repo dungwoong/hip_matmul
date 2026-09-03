@@ -1,0 +1,18 @@
+Set-ExecutionPolicy Bypass -Scope Process
+
+./add_paths.ps1
+
+mkdir build
+cd build
+
+cmake -S .. -B . `
+    -DCMAKE_C_COMPILER="C:/Program Files/AMD/ROCm/6.2/bin/clang.exe" `
+    -DCMAKE_CXX_COMPILER="C:/Program Files/AMD/ROCm/6.2/bin/clang++.exe" `
+    -G "Ninja" -DCMAKE_BUILD_TYPE=Release `
+    -DCMAKE_HIP_COMPILER_ROCM_ROOT="C:/Program Files/AMD/ROCm/6.2" `
+    -DCMAKE_HIP_ARCHITECTURES=gfx1031
+
+ninja
+
+cd python
+py test_matmul.py
