@@ -14,5 +14,8 @@ cmake -S .. -B . `
 
 ninja
 
+ninja matmul0_asm
+ninja matmul0_from_asm
+
 cd python
 py test_matmul.py

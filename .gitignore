@@ -46,6 +46,7 @@ python/build/*
 build/
 Build/
 build-*/
+build_asm/
 
 # CMake generated files
 CMakeFiles/
