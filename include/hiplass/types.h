@@ -30,26 +30,28 @@ struct Layout2D {
     
 };
 
-template <int rows_, int cols_>
+template <int rows_, int cols_, int padding_>
 struct st {
     using tag = st_tag;
     static constexpr int rows = rows_;
     static constexpr int cols = cols_;
+    static constexpr int padding = padding_;
 
-    float* data;
+    float (*data)[cols + padding];
 
-    HOSTDEVICE st(float* p) : data(p) {}
+    HOSTDEVICE st(float p[rows][cols + padding]) : data(p) {}
 
     HOSTDEVICE constexpr int size() const {
         return rows * cols;
     }
 
-    HOSTDEVICE int idx(int r, int c) const {
-        return r * cols + c;
-    }
+    // HOSTDEVICE int idx(int r, int c) const {
+    //     return r * cols + c;
+    // }
 
-    HOSTDEVICE float& operator()(int r, int c) const {
-        return data[idx(r, c)];
+    HOSTDEVICE float& operator()(int r, int c) {
+        // return data[idx(r, c)];
+        return data[r][c];
     }
 };
 
@@ -70,6 +72,20 @@ HOSTDEVICE void load(const IsGT auto& G, IsST auto& S, int laneId, int i0, int i
 
     for (int rowIdx = rowOffset; rowIdx < S.rows; rowIdx += rowIncr) {
         S(rowIdx, colOffset) = G(i0, i1, i2 + rowIdx, i3 + colOffset);
+    }
+}
+
+template <int nthreads>
+HOSTDEVICE void store(IsST auto& S, const IsGT auto& G, int laneId, int i0, int i1, int i2, int i3) {
+    // static_assert(S.size() % nthreads == 0);
+    static_assert(nthreads % S.cols == 0); // assume that we don't have to recalculate colOffset
+    int nTrips = S.size() / nthreads;
+    int rowOffset = laneId / S.cols;
+    int colOffset = laneId % S.cols;
+    int rowIncr = nthreads / S.cols;
+
+    for (int rowIdx = rowOffset; rowIdx < S.rows; rowIdx += rowIncr) {
+        G(i0, i1, i2 + rowIdx, i3 + colOffset) = S(rowIdx, colOffset);
     }
 }
 }
