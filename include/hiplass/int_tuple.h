@@ -62,23 +62,23 @@ struct HierarchicalLoad {
     using WAVE_S_TILE = elementwise_multiply_t<WAVE_TILE, WAVE_SERIAL_LAYOUT>;
     using WAVE_P_TILE = elementwise_multiply_t<WAVE_S_TILE, WAVE_PARALLEL_LAYOUT>;
 
-    static int rowA(int waveid, int laneid, int m_serial_idx, int m_thread_idx) {
+    HOSTDEVICE static int rowA(int waveid, int laneid, int m_serial_idx, int m_thread_idx) {
         int waveM = WAVE_PARALLEL_LAYOUT::coord(waveid)[0];   // which Wave Tile row-block
         int laneM = WAVE_LAYOUT::coord(laneid)[0];            // which thread-tile row within the wave
 
-        return waveM      * WAVE_S_TILE::get<0>()
-            + m_serial_idx * WAVE_TILE::get<0>()
-            + laneM      * THREAD_TILE::get<0>()
+        return waveM      * WAVE_S_TILE::template get<0>()
+            + m_serial_idx * WAVE_TILE::template get<0>()
+            + laneM      * THREAD_TILE::template get<0>()
             + m_thread_idx;
     }
 
-    static int rowB(int waveid, int laneid, int n_serial_idx, int n_thread_idx) {
+    HOSTDEVICE static int rowB(int waveid, int laneid, int n_serial_idx, int n_thread_idx) {
         int waveN = WAVE_PARALLEL_LAYOUT::coord(waveid)[1];
         int laneN = WAVE_LAYOUT::coord(laneid)[1];
 
-        return waveN      * WAVE_S_TILE::get<1>()
-            + n_serial_idx * WAVE_TILE::get<1>()
-            + laneN      * THREAD_TILE::get<1>()
+        return waveN      * WAVE_S_TILE::template get<1>()
+            + n_serial_idx * WAVE_TILE::template get<1>()
+            + laneN      * THREAD_TILE::template get<1>()
             + n_thread_idx;
     }
 };
@@ -101,15 +101,15 @@ struct HierarchicalStore {
         std::array<int, 2> ThreadSIdx = THREAD_TILE::coord(thread_s_idx);
 
         int row = (
-            (WavePIdx[0] * WAVE_S_TILE::get<0>()) +
-            (WaveSIdx[0] * WAVE_TILE::get<0>()) +
-            (ThreadPIdx[0] * THREAD_TILE::get<0>()) +
+            (WavePIdx[0] * WAVE_S_TILE::template get<0>()) +
+            (WaveSIdx[0] * WAVE_TILE::template get<0>()) +
+            (ThreadPIdx[0] * THREAD_TILE::template get<0>()) +
             (ThreadSIdx[0])
         );
         int col = (
-            (WavePIdx[1] * WAVE_S_TILE::get<1>()) +
-            (WaveSIdx[1] * WAVE_TILE::get<1>()) +
-            (ThreadPIdx[1] * THREAD_TILE::get<1>()) +
+            (WavePIdx[1] * WAVE_S_TILE::template get<1>()) +
+            (WaveSIdx[1] * WAVE_TILE::template get<1>()) +
+            (ThreadPIdx[1] * THREAD_TILE::template get<1>()) +
             (ThreadSIdx[1])
         );
         return {row, col};

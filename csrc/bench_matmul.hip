@@ -58,7 +58,10 @@ int main(int argc, char **argv)
 
     printf("M=%d K=%d N=%d iters=%d\n", M, K, N, iters);
 
-    std::vector<float> hA(M * K), hB(K * N), hC_naive(M * N), hC_rocblas(M * N);
+    // hB is [N,K] row-major (transposed vs. the usual [K,N]) -- matches
+    // kernel1_naive's expected layout (see csrc/naive_kernel.h). Same
+    // element count either way (N*K == K*N), only the logical shape differs.
+    std::vector<float> hA(M * K), hB(N * K), hC_naive(M * N), hC_rocblas(M * N);
     std::mt19937 rng(0);
     std::normal_distribution<float> dist(0.0f, 1.0f);
     for (auto &v : hA) v = dist(rng);
@@ -80,10 +83,15 @@ int main(int argc, char **argv)
     printf("\nnaive:    %8.3f ms  ->  %7.3f TFLOPS\n", naive_ms, naive_tflops);
 
     // --- rocBLAS (optional) -----------------------------------------------
-    // A, B, C are row-major (M,K)/(K,N)/(M,N). rocBLAS/BLAS is column-major,
-    // so instead of transposing anything we swap the operand order and
-    // dimensions: interpreting our row-major buffers as column-major data
-    // computes C^T = B^T * A^T, which is exactly the row-major C we want.
+    // A, C are row-major (M,K)/(M,N); B is row-major (N,K) -- i.e. already
+    // B^T relative to the usual (K,N). rocBLAS/BLAS is column-major, so a
+    // row-major (M,K) buffer read as column-major is exactly that matrix's
+    // transpose with dims swapped -- which is the trick the old (K,N)-B
+    // version of this comment used directly for both A and B. Now that B's
+    // buffer is already B^T, reading it as column-major (K,N) [dims
+    // swapped again] hands back plain B, not B^T -- so B needs an explicit
+    // transpose flag to get back to B^T for the C^T = B^T * A^T identity
+    // below. A is unaffected, since its layout didn't change.
     //
     // rocBLAS ships precompiled kernels per GPU architecture (via Tensile);
     // not every arch has one bundled (notably several RDNA2 SKUs on the
@@ -96,10 +104,10 @@ int main(int argc, char **argv)
     const float alpha = 1.0f, beta = 0.0f;
 
     if (rocblas_ok) {
-        rocblas_status st = rocblas_sgemm(handle, rocblas_operation_none, rocblas_operation_none,
+        rocblas_status st = rocblas_sgemm(handle, rocblas_operation_transpose, rocblas_operation_none,
                                            N, M, K,
                                            &alpha,
-                                           dB, N,
+                                           dB, K,
                                            dA, K,
                                            &beta,
                                            dC, N);
@@ -111,10 +119,10 @@ int main(int argc, char **argv)
         printf("\nrocBLAS is not usable on this GPU/ROCm install (see stderr above for its error) -- skipping the comparison.\n");
     } else {
         float rocblas_ms = time_hip_call([&]() {
-            rocblas_sgemm(handle, rocblas_operation_none, rocblas_operation_none,
+            rocblas_sgemm(handle, rocblas_operation_transpose, rocblas_operation_none,
                           N, M, K,
                           &alpha,
-                          dB, N,
+                          dB, K,
                           dA, K,
                           &beta,
                           dC, N);

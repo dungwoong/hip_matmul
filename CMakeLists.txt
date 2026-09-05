@@ -1,6 +1,6 @@
 # Build steps (PowerShell, from the repo root):
 #   1. .\add_paths.ps1
-#      (sets PYBIND11_INCLUDE_DIR / PYTHON_INCLUDE_DIR / PYTHON_LIB / TORCH_DIR
+#      (sets PYBIND11_INCLUDE_DIR / PYTHON_INCLUDE_DIR / PYTHON_LIB
 #      for this shell session by asking your Python interpreter for them)
 #   2. cmake -S . -B build `
 #        -DCMAKE_C_COMPILER="C:/Program Files/AMD/ROCm/6.2/bin/clang.exe" `
@@ -45,9 +45,9 @@
 cmake_minimum_required(VERSION 3.14)
 project(PybindHIP LANGUAGES CXX HIP)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_HIP_STANDARD 17)
+set(CMAKE_HIP_STANDARD 20)
 
 find_package(HIP REQUIRED)
 
@@ -61,33 +61,29 @@ endfunction()
 require_env_var(PYBIND11_INCLUDE_DIR)
 require_env_var(PYTHON_INCLUDE_DIR)
 require_env_var(PYTHON_LIB)
-require_env_var(TORCH_DIR)
 
 include_directories(
     "${PYBIND11_INCLUDE_DIR}"
     "${PYTHON_INCLUDE_DIR}"
     "${CMAKE_HIP_COMPILER_ROCM_ROOT}/include"
-    "${TORCH_DIR}"
-    "${TORCH_DIR}/include/torch/csrc/api/include"
+    "${CMAKE_SOURCE_DIR}/include"
 )
-link_directories("${TORCH_DIR}/lib" "${CMAKE_HIP_COMPILER_ROCM_ROOT}/lib")
-find_package(Torch REQUIRED PATHS "${TORCH_DIR}")
+link_directories("${CMAKE_HIP_COMPILER_ROCM_ROOT}/lib")
 
 set(EXT_INCLUDES
     "-I${PYBIND11_INCLUDE_DIR}"
     "-I${PYTHON_INCLUDE_DIR}"
     "-isystem${CMAKE_HIP_COMPILER_ROCM_ROOT}/include"
-    "-isystem${TORCH_DIR}"
-    "-isystem${TORCH_DIR}/include"
-    "-isystem${TORCH_DIR}/include/torch/csrc/api/include"
+    "-I${CMAKE_SOURCE_DIR}/include"
 )
 
 # The normal matmul0 target gets these from CMAKE_CXX_STANDARD/MSVC-compat
 # handling automatically; our manual add_hip_pyext() commands below invoke
-# the compiler directly, so they need to be passed explicitly. Without
-# -std=c++17, torch's headers (which use std::optional etc.) fail to parse.
+# the compiler directly, so they need to be passed explicitly. These match
+# Python's own MSVC-built CRT on Windows (msvcrt/_DLL/_MT), which pybind11's
+# extension ABI needs regardless of what the extension itself links against.
 set(EXT_FLAGS
-    -std=c++17
+    -std=c++20
     -fms-extensions
     -fms-compatibility
     -D_DLL
@@ -114,8 +110,7 @@ function(add_hip_pyext name)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/python/build"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/python/build"
     )
-    target_link_libraries(${name} "${PYTHON_LIB}" torch torch_python)
-    target_include_directories(${name} PRIVATE ${TORCH_INCLUDE_DIRS})
+    target_link_libraries(${name} "${PYTHON_LIB}")
 
     # --- <name>_asm / <name>_from_asm ---------------------------------------
     set(ASM_DIR "${CMAKE_SOURCE_DIR}/build_asm/${name}")
@@ -204,13 +199,8 @@ function(add_hip_pyext name)
                 "-Xlinker" "/pdb:${ASM_DIR}/${name}.pdb"
                 -Xlinker /version:0.0
                 "${HOST_OBJ}"
-                "-L${TORCH_DIR}/lib"
                 "-L${CMAKE_HIP_COMPILER_ROCM_ROOT}/lib"
                 "${PYTHON_LIB}"
-                "${TORCH_DIR}/lib/torch.lib"
-                -ltorch_python.lib
-                "${TORCH_DIR}/lib/torch_cpu.lib"
-                "${TORCH_DIR}/lib/c10.lib"
                 "${CMAKE_HIP_COMPILER_ROCM_ROOT}/lib/amdhip64.lib"
                 -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32
                 -loleaut32 -luuid -lcomdlg32 -ladvapi32 -loldnames
@@ -235,4 +225,13 @@ function(add_hip_pyext name)
 endfunction()
 
 add_hip_pyext(matmul0 "${CMAKE_SOURCE_DIR}/csrc/naive_kernel.h")
+
+add_hip_pyext(matmul1
+    "${CMAKE_SOURCE_DIR}/csrc/naive_kernel.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/hiplass.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/utils.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/int_tuple.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/types.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/ops.h"
+)
 

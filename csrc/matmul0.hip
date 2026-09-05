@@ -1,4 +1,5 @@
-#include <torch/extension.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <hip/hip_runtime.h>
 #include <stdexcept>
 #include "naive_kernel.h"
@@ -14,11 +15,8 @@ void matmul_launcher(uintptr_t A, uintptr_t B, uintptr_t C, int M, int K, int N)
 // kernel launches you want to profile: timer_start(), ..., timer_stop().
 // Everything launched on the default stream between the two calls gets
 // timed on-device; timer_stop() blocks until it's done and returns the
-// elapsed time in milliseconds. This is deliberately independent of torch's
-// own timing/profiling utilities (torch.utils.benchmark, torch.cuda.Event):
-// those go through torch.utils.cpp_extension under the hood, which
-// hard-blocks on Windows+ROCm regardless of whether the underlying binaries
-// actually work.
+// elapsed time in milliseconds. Kept independent of any framework's own
+// timing/profiling utilities so this has no dependency beyond plain HIP.
 static hipEvent_t g_start_event = nullptr;
 static hipEvent_t g_stop_event = nullptr;
 
@@ -50,10 +48,17 @@ float timer_stop()
     return elapsed_ms;
 }
 
-// --- CPU tensor <-> HIP device buffer helpers -----------------------------
+// --- numpy array <-> HIP device buffer helpers ----------------------------
 // Windows + ROCm doesn't support running kernels directly against a
-// torch.cuda tensor's dispatcher, so tensors stay on CPU in Python and we
-// manually stage them into HIP device memory, run the kernel, then copy back.
+// torch.cuda-style tensor's dispatcher, so arrays stay on the host in
+// Python and we manually stage them into HIP device memory, run the
+// kernel, then copy back.
+namespace py = pybind11;
+
+// py::array::c_style forces a C-contiguous layout, py::array::forcecast
+// lets pybind11 convert non-float32 input rather than rejecting it outright
+// -- mirrors what `.contiguous()` used to do on the torch side.
+using float_array = py::array_t<float, py::array::c_style | py::array::forcecast>;
 
 uintptr_t allocate(int64_t numel)
 {
@@ -62,27 +67,27 @@ uintptr_t allocate(int64_t numel)
     return reinterpret_cast<uintptr_t>(device_ptr);
 }
 
-uintptr_t move_to_hip(const at::Tensor &x)
+uintptr_t move_to_hip(float_array x)
 {
-    TORCH_CHECK(!x.is_cuda(), "Input must be on CPU");
-    TORCH_CHECK(x.dtype() == torch::kFloat32, "Only float32 supported");
+    py::buffer_info info = x.request();
 
-    int64_t numel = x.numel();
+    int64_t numel = info.size;
     float *device_ptr;
     hipMalloc(&device_ptr, numel * sizeof(float));
-    hipMemcpy(device_ptr, x.contiguous().data_ptr<float>(), numel * sizeof(float), hipMemcpyHostToDevice);
+    hipMemcpy(device_ptr, static_cast<const float *>(info.ptr), numel * sizeof(float), hipMemcpyHostToDevice);
 
     return reinterpret_cast<uintptr_t>(device_ptr);
 }
 
-void move_to_torch(uintptr_t addr, const at::Tensor &x)
+// Writes into an already-allocated output array (e.g. np.empty(...)),
+// same contract the old at::Tensor version had: caller owns/sizes it.
+void move_to_host(uintptr_t addr, py::array_t<float> x)
 {
-    TORCH_CHECK(!x.is_cuda(), "Output must be on CPU");
-    TORCH_CHECK(x.dtype() == torch::kFloat32, "Only float32 supported");
+    py::buffer_info info = x.request();
 
-    int64_t numel = x.numel();
+    int64_t numel = info.size;
     float *data = reinterpret_cast<float *>(addr);
-    hipMemcpy(x.data_ptr<float>(), data, numel * sizeof(float), hipMemcpyDeviceToHost);
+    hipMemcpy(static_cast<float *>(info.ptr), data, numel * sizeof(float), hipMemcpyDeviceToHost);
 }
 
 void free_hip(uintptr_t addr)
@@ -93,11 +98,11 @@ void free_hip(uintptr_t addr)
 
 PYBIND11_MODULE(matmul0, m)
 {
-    m.def("to_hip", &move_to_hip, "Copy a CPU float32 tensor to a HIP buffer, returns its address");
-    m.def("to_torch", &move_to_torch, "Copy a HIP buffer back into a CPU float32 tensor");
+    m.def("to_hip", &move_to_hip, "Copy a CPU float32 numpy array to a HIP buffer, returns its address");
+    m.def("to_host", &move_to_host, "Copy a HIP buffer back into an existing CPU float32 numpy array");
     m.def("alloc", &allocate, "Allocate a HIP buffer of `numel` floats, returns its address");
     m.def("free_hip", &free_hip, "Free a HIP buffer");
-    m.def("matmul", &matmul_launcher, "Naive HIP matmul: C[MxN] = A[MxK] @ B[KxN], all args are HIP buffer addresses");
+    m.def("matmul", &matmul_launcher, "Naive HIP matmul: C[MxN] = A[MxK] @ B[NxK]^T (B stored [N,K], see csrc/naive_kernel.h), all args are HIP buffer addresses");
     m.def("timer_start", &timer_start, "Record a HIP event marking the start of a profiling window");
     m.def("timer_stop", &timer_stop, "Record a HIP event marking the end of a profiling window, sync, and return elapsed ms since timer_start()");
 }
