@@ -6,13 +6,14 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--speed', action='store_true')
+    parser.add_argument('--method', type=str, choices=['naive', 'tiled', 'rocblas'])
     args = parser.parse_args()
 
     np.random.seed(0)
     M, K, N = 4096, 4096, 4096
     ITERS = 10
     FLOPS = 2 * M * N * K  # multiply-add = 2 flops per output element per k-step
-    KERNEL='tiled'
+    KERNEL= args.method
 
     A = np.random.randn(M, K).astype(np.float32)
     B = np.random.randn(N, K).astype(np.float32)

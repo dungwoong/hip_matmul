@@ -95,16 +95,24 @@ __global__ void kernel2(float *A, float *B, float *C, int M, int N, int K) {
         __syncthreads();
     }
 
-    // store back
+    // store back, 4 elements at a time (float4) since C is row-major and the
+    // N dimension is contiguous in both C_regs and global memory
+    static_assert(THREAD_N % 4 == 0, "float4 store requires THREAD_N divisible by 4");
     #pragma unroll
-    for (int thread_s_idx = 0; thread_s_idx < THREAD_LAYOUT::size(); ++thread_s_idx) {
-        std::array<int, 2> threadS = THREAD_LAYOUT::coord(thread_s_idx);   // {threadS_M, threadS_N}
+    for (int mIdx = 0; mIdx < THREAD_M; ++mIdx) {
+        #pragma unroll
+        for (int nIdx = 0; nIdx < THREAD_N; nIdx += 4) {
+            int thread_s_idx = mIdx + THREAD_M * nIdx;   // inverse of THREAD_LAYOUT::coord
+            std::array<int, 2> rc = HierStore::crds(waveid, laneid, thread_s_idx);
 
-        int mIdx = threadS[0];
-        int nIdx = threadS[1];
+            float4 vals = make_float4(
+                C_regs[mIdx * THREAD_N + nIdx + 0],
+                C_regs[mIdx * THREAD_N + nIdx + 1],
+                C_regs[mIdx * THREAD_N + nIdx + 2],
+                C_regs[mIdx * THREAD_N + nIdx + 3]);
 
-        std::array<int, 2> rc = HierStore::crds(waveid, laneid, thread_s_idx);
-        gC(0, 0, rc[0] + mBase, rc[1] + nBase) = C_regs[mIdx * THREAD_N + nIdx];
+            *reinterpret_cast<float4*>(&gC(0, 0, rc[0] + mBase, rc[1] + nBase)) = vals;
+        }
     }
 }
 

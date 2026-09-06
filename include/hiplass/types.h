@@ -63,6 +63,56 @@ concept IsGT = requires { typename T::tag; } && std::same_as<typename T::tag, gt
 
 template <int nthreads>
 HOSTDEVICE void load(const IsGT auto& G, IsST auto& S, int laneId, int i0, int i1, int i2, int i3) {
+    // Global -> shared, 4 elements at a time: each thread reads a float4 from
+    // G (contiguous in the fastest-varying / column dimension) and unpacks it
+    // into shared memory a scalar at a time (S rows are padded, so a vector
+    // store there isn't reliably 16B-aligned).
+    static_assert(S.cols % 4 == 0, "float4 load requires S.cols divisible by 4");
+    constexpr int VCOLS = S.cols / 4;
+    static_assert(nthreads % VCOLS == 0); // assume that we don't have to recalculate colOffset
+    int rowOffset = laneId / VCOLS;
+    int vecCol = laneId % VCOLS;
+    int colOffset = vecCol * 4;
+    int rowIncr = nthreads / VCOLS;
+
+    for (int rowIdx = rowOffset; rowIdx < S.rows; rowIdx += rowIncr) {
+        float4 val = *reinterpret_cast<const float4*>(&G(i0, i1, i2 + rowIdx, i3 + colOffset));
+        S(rowIdx, colOffset + 0) = val.x;
+        S(rowIdx, colOffset + 1) = val.y;
+        S(rowIdx, colOffset + 2) = val.z;
+        S(rowIdx, colOffset + 3) = val.w;
+    }
+}
+
+
+/*
+Loads go GMEM --> Regs --> LDS. This breaks load into 2 parts so we can do them simultaneously,
+if that becomes an issue
+*/
+template <int nthreads>
+HOSTDEVICE void loadRegs(const IsGT auto& G, IsST auto& S, float* R, int laneId, int i0, int i1, int i2, int i3) {
+    // Global -> registers, 4 elements at a time: each thread reads a float4
+    // from G and unpacks it into R a scalar at a time (R is a caller-owned
+    // stack array with no guaranteed 16B alignment).
+    static_assert(S.cols % 4 == 0, "float4 load requires S.cols divisible by 4");
+    constexpr int VCOLS = S.cols / 4;
+    static_assert(nthreads % VCOLS == 0); // assume that we don't have to recalculate colOffset
+    int rowOffset = laneId / VCOLS;
+    int vecCol = laneId % VCOLS;
+    int colOffset = vecCol * 4;
+    int rowIncr = nthreads / VCOLS;
+
+    for (int rowIdx = rowOffset, i = 0; rowIdx < S.rows; rowIdx += rowIncr, i += 4) {
+        float4 val = *reinterpret_cast<const float4*>(&G(i0, i1, i2 + rowIdx, i3 + colOffset));
+        R[i + 0] = val.x;
+        R[i + 1] = val.y;
+        R[i + 2] = val.z;
+        R[i + 3] = val.w;
+    }
+}
+
+template <int nthreads>
+HOSTDEVICE void loadShared(const IsGT auto& G, IsST auto& S, float *R, int laneId, int i0, int i1, int i2, int i3) {
     // static_assert(S.size() % nthreads == 0);
     static_assert(nthreads % S.cols == 0); // assume that we don't have to recalculate colOffset
     int nTrips = S.size() / nthreads;
@@ -70,8 +120,8 @@ HOSTDEVICE void load(const IsGT auto& G, IsST auto& S, int laneId, int i0, int i
     int colOffset = laneId % S.cols;
     int rowIncr = nthreads / S.cols;
 
-    for (int rowIdx = rowOffset; rowIdx < S.rows; rowIdx += rowIncr) {
-        S(rowIdx, colOffset) = G(i0, i1, i2 + rowIdx, i3 + colOffset);
+    for (int rowIdx = rowOffset, i=0; rowIdx < S.rows; rowIdx += rowIncr, i++) {
+        S(rowIdx, colOffset) = R[i];
     }
 }
 
