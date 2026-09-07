@@ -6,7 +6,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--speed', action='store_true')
-    parser.add_argument('--method', type=str, choices=['naive', 'tiled', 'rocblas'])
+    parser.add_argument('--method', type=str, choices=['naive', 'tiled', 'pipelined'])
     args = parser.parse_args()
 
     np.random.seed(0)
@@ -24,7 +24,8 @@ if __name__ == '__main__':
     B_gpu = to_device(B)
 
     # --- correctness -----------------------------------------------------------
-    C = matmul(A_gpu, B_gpu, kernel=KERNEL).cpu()
+    for _ in range(5):
+        C = matmul(A_gpu, B_gpu, kernel=KERNEL).cpu()
     C_ref = A @ B.T
 
     # atol is loosened vs. a smaller-size test: with K=4096, entries of C have

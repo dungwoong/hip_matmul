@@ -2,20 +2,6 @@ import os
 import sys
 import numpy as np
 
-# Since Python 3.8, Windows extension modules (.pyd) no longer search PATH
-# for their dependent DLLs -- only System32, the .pyd's own directory, and
-# whatever's been added via os.add_dll_directory(). ROCm's installer drops
-# amdhip64_*.dll into System32 (which is why matmul0/matmul1 "just work"),
-# but rocblas.dll lives in ROCm's own bin/ dir and is never copied there,
-# so matmul2 (rocBLAS) needs this explicit opt-in or it fails to import
-# with "DLL load failed: the specified module could not be found" no
-# matter what's on PATH.
-if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-    _rocm_root = os.environ.get("HIP_PATH") or r"C:\Program Files\AMD\ROCm\6.2"
-    _rocm_bin = os.path.join(_rocm_root, "bin")
-    if os.path.isdir(_rocm_bin):
-        os.add_dll_directory(_rocm_bin)
-
 # Import the compiled extension directly from python/build, rather than as
 # `build.matmul0`: if the `build` PyPI package (the PEP 517 frontend) is
 # installed, it shadows a local `build/` directory of the same name and
@@ -35,14 +21,12 @@ try:
 except ImportError:
     _HAVE_MATMUL1 = False
 
-# matmul2 wraps rocBLAS's rocblas_sgemm; same optional-import treatment as
-# matmul1 above -- only present once its CMake target has been built.
 try:
     import matmul2
     _HAVE_MATMUL2 = True
 except ImportError:
     _HAVE_MATMUL2 = False
-import matmul2
+
 
 
 class HipArray:
@@ -101,7 +85,7 @@ _KERNELS = {
 if _HAVE_MATMUL1:
     _KERNELS["tiled"] = matmul1.matmul
 if _HAVE_MATMUL2:
-    _KERNELS["rocblas"] = matmul2.matmul
+    _KERNELS["pipelined"] = matmul2.matmul
 
 
 # matmul(A, B, kernel="naive") -> C, computing C = A @ B for HipArrays

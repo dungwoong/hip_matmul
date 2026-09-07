@@ -1,0 +1,169 @@
+#include <pybind11/pybind11.h>
+#include <hip/hip_runtime.h>
+#include <stdexcept>
+#include "naive_kernel.h"
+#include "hiplass/hiplass.h"
+
+
+namespace kernels {
+namespace kernel2 {
+
+using namespace hiplass;
+
+template<typename A, typename B>
+using hmul = elementwise_multiply_t<A, B>;
+
+// --- tiling layout, shared by kernel2 and matmul1_launcher below -----------
+using THREAD_LAYOUT = IntTuple<8, 8>;
+
+using WAVE_LAYOUT = IntTuple<4, 8>; // wave = warp
+
+using WAVE_PARALLEL = IntTuple<4, 2>; // use multiple waves
+constexpr int nWaves = WAVE_PARALLEL::size(); // wave = warp
+constexpr int BLOCK_SIZE = nWaves * 32;
+
+using WAVE_TILE = hmul<THREAD_LAYOUT, WAVE_LAYOUT>;
+using WAVE_P_TILE = hmul<WAVE_TILE, WAVE_PARALLEL>;
+constexpr int TK = 16;
+constexpr int TM = WAVE_P_TILE::get<0>();
+constexpr int TN = WAVE_P_TILE::get<1>();
+
+constexpr int THREAD_M = THREAD_LAYOUT::get<0>();
+constexpr int THREAD_N = THREAD_LAYOUT::get<1>();
+constexpr int SMEM_PAD = 1;
+
+// Perform C = A @ B, fp32 everything for now.
+// A is [M,K] row-major; B is [N,K] row-major (i.e. B^T vs. the usual [K,N]
+// layout -- see matmul1_launcher below, which documents/enforces this on
+// the host side); C is [M,N] row-major.
+__global__ void 
+__launch_bounds__(BLOCK_SIZE) kernel2(float *A, float *B, float *C, int M, int N, int K) {
+
+    // __shared__ float As_ptr[TM * TK];
+    // __shared__ float Bs_ptr[TN * TK];
+    __shared__ float As_ptr[2][TM][TK+SMEM_PAD];
+    __shared__ float Bs_ptr[2][TN][TK+SMEM_PAD];
+
+    gt gA(A, 1, 1, M, K);
+    gt gB(B, 1, 1, N, K);
+    gt gC(C, 1, 1, M, N);
+    st<TM, TK, SMEM_PAD> sAs[2] = {st<TM, TK, SMEM_PAD>(As_ptr[0]), st<TM, TK, SMEM_PAD>(As_ptr[1])};
+    st<TN, TK, SMEM_PAD> sBs[2] = {st<TN, TK, SMEM_PAD>(Bs_ptr[0]), st<TN, TK, SMEM_PAD>(Bs_ptr[1])};
+
+    // For registers
+    float A_col[THREAD_M]; // column of A
+    float B_row[THREAD_N]; // row of B
+
+    float C_regs[THREAD_M * THREAD_N] = {0.0};
+    int laneid = threadIdx.x % 32;
+    int waveid = threadIdx.x / 32;
+    using HierLoad = HierarchicalLoad<THREAD_LAYOUT, WAVE_LAYOUT, WAVE_PARALLEL>;
+    using HierStore = HierarchicalStore<THREAD_LAYOUT, WAVE_LAYOUT, WAVE_PARALLEL>;
+
+    int mBase = blockIdx.x * TM;
+    int nBase = blockIdx.y * TN;
+
+    // pre fetch
+    int sidx = 0;
+    load<BLOCK_SIZE>(gA, sAs[sidx], threadIdx.x, 0, 0, mBase, 0);
+    load<BLOCK_SIZE>(gB, sBs[sidx], threadIdx.x, 0, 0, nBase, 0);
+    __syncthreads();
+
+    for (int lK = TK; lK < K; lK += TK, sidx ^= 1) {
+        // populate shared memory
+        // read TM * TK for A
+        load<BLOCK_SIZE>(gA, sAs[sidx ^ 1], threadIdx.x, 0, 0, mBase, lK);
+        load<BLOCK_SIZE>(gB, sBs[sidx ^ 1], threadIdx.x, 0, 0, nBase, lK);
+
+        // computation
+        // populate A_col and B_row from As and Bs
+
+        // load stuff to registers
+        for (int rK = 0; rK < TK; ++rK) {
+
+            // load A to registers
+            #pragma unroll
+            for (int threadS = 0; threadS < THREAD_LAYOUT::get<0>(); ++threadS) {
+                int rowA = HierLoad::rowA(waveid, laneid, threadS);
+                A_col[threadS] = sAs[sidx](rowA, rK);
+            }
+
+            #pragma unroll
+            for (int threadS = 0; threadS < THREAD_LAYOUT::get<1>(); ++threadS) {
+                int rowB = HierLoad::rowB(waveid, laneid, threadS);
+                B_row[threadS] = sBs[sidx](rowB, rK);
+            }
+
+            // matmul
+            thread_matmul<THREAD_M, THREAD_N>(A_col, B_row, C_regs);
+        }
+
+        __syncthreads();
+    }
+
+    for (int rK = 0; rK < TK; ++rK) {
+
+        // load A to registers
+        #pragma unroll
+        for (int threadS = 0; threadS < THREAD_LAYOUT::get<0>(); ++threadS) {
+            int rowA = HierLoad::rowA(waveid, laneid, threadS);
+            A_col[threadS] = sAs[sidx](rowA, rK);
+        }
+
+        #pragma unroll
+        for (int threadS = 0; threadS < THREAD_LAYOUT::get<1>(); ++threadS) {
+            int rowB = HierLoad::rowB(waveid, laneid, threadS);
+            B_row[threadS] = sBs[sidx](rowB, rK);
+        }
+
+        // matmul
+        thread_matmul<THREAD_M, THREAD_N>(A_col, B_row, C_regs);
+    }
+
+    // store back, 4 elements at a time (float4) since C is row-major and the
+    // N dimension is contiguous in both C_regs and global memory
+    static_assert(THREAD_N % 4 == 0, "float4 store requires THREAD_N divisible by 4");
+    #pragma unroll
+    for (int mIdx = 0; mIdx < THREAD_M; ++mIdx) {
+        #pragma unroll
+        for (int nIdx = 0; nIdx < THREAD_N; nIdx += 4) {
+            int thread_s_idx = mIdx + THREAD_M * nIdx;   // inverse of THREAD_LAYOUT::coord
+            std::array<int, 2> rc = HierStore::crds(waveid, laneid, thread_s_idx);
+
+            float4 vals = make_float4(
+                C_regs[mIdx * THREAD_N + nIdx + 0],
+                C_regs[mIdx * THREAD_N + nIdx + 1],
+                C_regs[mIdx * THREAD_N + nIdx + 2],
+                C_regs[mIdx * THREAD_N + nIdx + 3]);
+
+            *reinterpret_cast<float4*>(&gC(0, 0, rc[0] + mBase, rc[1] + nBase)) = vals;
+        }
+    }
+}
+
+// --- host launcher / dispatcher entry point --------------------------------
+// C[MxN] = A[MxK] @ B[NxK]^T. Note the B layout: this kernel reads B as
+// [N,K] row-major (see kernel2's comment above), NOT the [K,N] layout
+// matmul0's naive kernel expects -- callers must transpose B on the host
+// before staging it, or this silently computes the wrong thing. A/B/C are
+// HIP buffer addresses, same contract as matmul0.matmul (allocate/copy them
+// with matmul0.alloc/to_hip/to_host -- this module only adds the kernel).
+void matmul2_launcher(uintptr_t A, uintptr_t B, uintptr_t C, int M, int K, int N)
+{
+    dim3 block(BLOCK_SIZE);
+    dim3 grid((M + TM - 1) / TM, (N + TN - 1) / TN);
+    hipLaunchKernelGGL(kernel2, grid, block, 0, 0,
+        reinterpret_cast<float *>(A), reinterpret_cast<float *>(B), reinterpret_cast<float *>(C),
+        M, N, K);
+    hipDeviceSynchronize();
+}
+
+} //namespace kernel2
+} // namespace kernels
+
+PYBIND11_MODULE(matmul2, m)
+{
+    m.def("matmul", &kernels::kernel2::matmul2_launcher,
+          "Tiled HIP matmul: C[MxN] = A[MxK] @ B[NxK]^T (B stored [N,K], see csrc/matmul1.hip), "
+          "all args are HIP buffer addresses (allocate/copy via matmul0's to_hip/alloc/to_host)");
+}

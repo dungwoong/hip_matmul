@@ -235,9 +235,12 @@ add_hip_pyext(matmul1
     "${CMAKE_SOURCE_DIR}/include/hiplass/ops.h"
 )
 
-add_hip_pyext(matmul2)
-# rocBLAS isn't pulled in by find_package(HIP), so link it explicitly --
-# link_directories("${CMAKE_HIP_COMPILER_ROCM_ROOT}/lib") above already
-# points at where rocblas.lib/rocblas.dll live in the ROCm install.
-target_link_libraries(matmul2 rocblas)
+add_hip_pyext(matmul2
+    "${CMAKE_SOURCE_DIR}/csrc/naive_kernel.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/hiplass.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/utils.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/int_tuple.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/types.h"
+    "${CMAKE_SOURCE_DIR}/include/hiplass/ops.h"
+)
 

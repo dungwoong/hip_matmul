@@ -75,6 +75,7 @@ HOSTDEVICE void load(const IsGT auto& G, IsST auto& S, int laneId, int i0, int i
     int colOffset = vecCol * 4;
     int rowIncr = nthreads / VCOLS;
 
+    #pragma unroll
     for (int rowIdx = rowOffset; rowIdx < S.rows; rowIdx += rowIncr) {
         float4 val = *reinterpret_cast<const float4*>(&G(i0, i1, i2 + rowIdx, i3 + colOffset));
         S(rowIdx, colOffset + 0) = val.x;

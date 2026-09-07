@@ -30,7 +30,7 @@ constexpr int TN = WAVE_P_TILE::get<1>();
 
 constexpr int THREAD_M = THREAD_LAYOUT::get<0>();
 constexpr int THREAD_N = THREAD_LAYOUT::get<1>();
-constexpr int SMEM_PAD = 3;
+constexpr int SMEM_PAD = 1;
 
 // Perform C = A @ B, fp32 everything for now.
 // A is [M,K] row-major; B is [N,K] row-major (i.e. B^T vs. the usual [K,N]
