@@ -1,4 +1,0 @@
-[submodule "third_party/rocBLAS"]
-	path = third_party/rocBLAS
-	url = https://github.com/ROCm/rocBLAS.git
-	branch = release/rocm-rel-6.2.4.1
