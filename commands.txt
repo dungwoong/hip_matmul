@@ -23,3 +23,5 @@ py test_matmul.py
 
 when profiling with RGP, add a sleep to the python script to allow it to capture
 Go to radeon gpu profiler and go to events > instruction timing.
+
+$env:PYTHONPATH = "$env:PYTHONPATH;$PWD\python"

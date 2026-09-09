@@ -244,3 +244,29 @@ add_hip_pyext(matmul2
     "${CMAKE_SOURCE_DIR}/include/hiplass/ops.h"
 )
 
+
+# --- test_tensor: plain host-side C++ test for the hiten/ tensor stand-in ---
+# hiten/hiten/Tensor.h is included as "hiten/Tensor.h", so the include path
+# needs to be the outer hiten/ dir (mirrors how include/hiplass/*.h is
+# included as "hiplass/*.h" via the include/ dir above).
+add_executable(test_tensor
+    test/test_tensor.cpp
+    hiten/hiten/Tensor.cpp
+)
+target_include_directories(test_tensor PRIVATE
+    "${CMAKE_SOURCE_DIR}/hiten"
+)
+# Tensor.cpp calls hipMalloc/hipMemcpy/hipFree (host-side HIP runtime API,
+# no device kernels here), so link against the HIP runtime import lib --
+# same lib the add_hip_pyext() link steps above use.
+target_link_libraries(test_tensor PRIVATE
+    "${CMAKE_HIP_COMPILER_ROCM_ROOT}/lib/amdhip64.lib"
+)
+# Tensor.cpp is a plain .cpp compiled by the ordinary CXX compiler, not run
+# through the HIP language driver -- so the __HIP_PLATFORM_AMD__ macro that
+# hip_runtime.h needs to pick its AMD implementation headers (where hipFree,
+# hipMemcpyHostToDevice, etc. actually get declared) never gets set
+# automatically the way it does for the .hip targets above. Define it
+# ourselves; this is the documented way to call the HIP runtime API from a
+# non-hipcc-compiled host TU (no device kernels involved here).
+target_compile_definitions(test_tensor PRIVATE __HIP_PLATFORM_AMD__)

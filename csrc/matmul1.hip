@@ -1,7 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <hip/hip_runtime.h>
 #include <stdexcept>
-#include "naive_kernel.h"
 #include "hiplass/hiplass.h"
 
 
